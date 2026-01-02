@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>震動訓練機 MQTT 控制台頁面</title>
+  <style>
+    body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans TC", sans-serif; margin: 16px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .card { border: 1px solid #ddd; border-radius: 12px; padding: 12px; margin: 12px 0; }
+    input, button, select, textarea { padding: 8px; border-radius: 8px; border:1px solid #ccc; }
+    textarea { width:100%; min-height: 110px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .pill { display:inline-block; padding:4px 10px; border-radius:999px; border:1px solid #ccc; }
+    .ok { border-color:#6cc070; }
+    .bad { border-color:#e06c75; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+    @media (max-width:900px){ .grid{ grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <h2>震動訓練機 MQTT 控制台（WebSocket）</h2>
+
+  <div class="card">
+    <div class="row">
+      <label>Broker (WSS URL)</label>
+      <input id="host" style="min-width:420px" value="wss://e50707646323498584f6a363ef61be50.s1.eu.hivemq.cloud:8884/mqtt" />
+    </div>
+    <div class="row">
+      <label>Username</label>
+      <!-- <input id="user" value="xarehub" /> -->
+             <input id="user" value="Gatohuang" />
+      <label>Password</label>
+      <!-- <input id="pass" type="password" value="hixarehub" /> -->
+       <input id="pass" type="password" value="Mao19780904" />
+      <button id="btnConn">Connect</button>
+      <button id="btnDisc" disabled>Disconnect</button>
+      <span id="status" class="pill bad">Disconnected</span>
+    </div>
+
+    <div class="row mono" style="margin-top:8px;">
+      <div>SUB:</div>
+      <div class="pill">vib/fb/json</div>
+      <div class="pill">vib/cmd/tx/hex</div>
+      <div class="pill">vib/uartb/rx/hex</div>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h3>送 JSON 指令（vib/cmd/json）</h3>
+      <div class="row">
+        <button id="btnSendJson">Publish JSON</button>
+        <button id="btnStart">Start</button>
+        <button id="btnStop">Stop</button>
+      </div>
+      <textarea id="jsonBox">
+{
+  "start": 1,
+  "vib": 1,
+  "mode": 1,
+  "ecc": 1,
+  "off": 20,
+  "pst": 10000,
+  "spd": 1000,
+  "amp": 20,
+  "hz": 102,
+  "damp": 583
+}
+      </textarea>
+      <div class="mono">Topic: <b>vib/cmd/json</b></div>
+    </div>
+
+    <div class="card">
+      <h3>送 HEX 指令（vib/cmd/hex）</h3>
+      <div class="row">
+        <button id="btnSendHex">Publish HEX</button>
+        <button id="btnIsoStart">等長開始</button>
+        <button id="btnIsoStop">等長停止</button>
+        <button id="btnTonStart">等張開始</button>
+        <button id="btnTonStop">等張停止</button>
+      </div>
+      <textarea id="hexBox">21 30 30 33 30 30 30 32 30 30 30 30 32 30 30 30 36 30 33 30 30 32 32 36 36 33 0D</textarea>
+      <div class="mono">Topic: <b>vib/cmd/hex</b></div>
+      <div style="font-size:12px;color:#666;margin-top:6px;">
+        ※ HEX 以空格分隔（例如：21 30 ... 0D），ESP32 解析後轉送 UART_B
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>即時顯示</h3>
+    <div class="row">
+      <div class="pill">Feedback JSON：<span id="fbLine" class="mono">-</span></div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <div class="pill">ESP32 → UART_B TX HEX：<span id="txHex" class="mono">-</span></div>
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <div class="pill">UART_B RX HEX：<span id="rxHex" class="mono">-</span></div>
+    </div>
+  </div>
+
+  <!-- mqtt.js CDN -->
+  <!-- <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script> -->
+   <script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
+
+  <script>
+    let client = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    function setStatus(ok, text) {
+      const el = $("status");
+      el.textContent = text;
+      el.classList.toggle("ok", ok);
+      el.classList.toggle("bad", !ok);
+    }
+
+    function connect() {
+      const url = $("host").value.trim();
+      const username = $("user").value;
+      const password = $("pass").value;
+
+      client = mqtt.connect(url, {
+        username,
+        password,
+        clientId: "web_" + Math.random().toString(16).slice(2),
+        clean: true,
+        keepalive: 30,
+        reconnectPeriod: 2000,
+        connectTimeout: 10_000
+      });
+
+      client.on("connect", () => {
+        setStatus(true, "Connected");
+        $("btnConn").disabled = true;
+        $("btnDisc").disabled = false;
+
+        client.subscribe(["vib/fb/json", "vib/cmd/tx/hex", "vib/uartb/rx/hex"], (err) => {
+          if (err) console.error("subscribe error", err);
+        });
+      });
+
+      client.on("reconnect", () => setStatus(false, "Reconnecting..."));
+      client.on("close", () => setStatus(false, "Disconnected"));
+      client.on("error", (e) => { console.error(e); setStatus(false, "Error"); });
+
+      client.on("message", (topic, payload) => {
+        const text = new TextDecoder().decode(payload);
+
+        if (topic === "vib/fb/json") {
+          try {
+            const fb = JSON.parse(text);
+            // 你最常看的欄位：err/home/io/real/cur/pos
+            const line = `ERR=${fb.err} | HOME1=${fb.home1} | HOME2=${fb.home2} | IO=${fb.io} | REAL=${fb.real} | CUR(%)=${(fb.cur01/10).toFixed(1)} | POS=${fb.pos}`;
+            $("fbLine").textContent = line;
+          } catch {
+            $("fbLine").textContent = text;
+          }
+        } else if (topic === "vib/cmd/tx/hex") {
+          $("txHex").textContent = text;
+        } else if (topic === "vib/uartb/rx/hex") {
+          $("rxHex").textContent = text;
+        }
+      });
+    }
+
+    function disconnect() {
+      if (client) client.end(true);
+      client = null;
+      $("btnConn").disabled = false;
+      $("btnDisc").disabled = true;
+      setStatus(false, "Disconnected");
+    }
+
+    function pub(topic, payload) {
+      if (!client || !client.connected) {
+        alert("尚未連線 MQTT");
+        return;
+      }
+      client.publish(topic, payload, { qos: 0, retain: false });
+    }
+
+    // ---- UI events ----
+    $("btnConn").onclick = connect;
+    $("btnDisc").onclick = disconnect;
+
+    $("btnSendJson").onclick = () => pub("vib/cmd/json", $("jsonBox").value.trim());
+    $("btnStart").onclick = () => {
+      const obj = JSON.parse($("jsonBox").value);
+      obj.start = 1;
+      $("jsonBox").value = JSON.stringify(obj, null, 2);
+      pub("vib/cmd/json", $("jsonBox").value);
+    };
+    $("btnStop").onclick = () => {
+      const obj = JSON.parse($("jsonBox").value);
+      obj.start = 0;
+      $("jsonBox").value = JSON.stringify(obj, null, 2);
+      pub("vib/cmd/json", $("jsonBox").value);
+    };
+
+    $("btnSendHex").onclick = () => pub("vib/cmd/hex", $("hexBox").value.trim());
+
+    // 你給的測試 frames：
+    const ISO_STOP  = "21 30 33 33 30 30 30 32 30 30 30 30 32 30 30 30 30 30 30 30 30 30 30 30 34 37 0D";
+    const ISO_START = "21 30 30 33 30 30 30 32 30 30 30 30 32 30 30 30 36 30 33 30 30 32 32 36 36 33 0D";
+    const TON_STOP  = "21 30 33 33 32 30 39 30 30 30 30 30 32 30 30 30 30 30 30 30 30 30 30 30 35 36 0D";
+    const TON_START = "21 30 30 33 32 30 39 30 30 30 30 30 32 30 30 30 30 30 30 30 30 30 30 30 35 33 0D";
+
+    $("btnIsoStart").onclick = () => pub("vib/cmd/hex", ISO_START);
+    $("btnIsoStop").onclick  = () => pub("vib/cmd/hex", ISO_STOP);
+    $("btnTonStart").onclick = () => pub("vib/cmd/hex", TON_START);
+    $("btnTonStop").onclick  = () => pub("vib/cmd/hex", TON_STOP);
+  </script>
+</body>
+</html>
